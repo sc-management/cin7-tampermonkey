@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cin7 extension
 // @namespace    https://bcosys.world/
-// @version      2024-02-20
+// @version      2024-04-08
 // @description  try to take over the world!
 // @author       Yihui Liu
 // @match        https://inventory.dearsystems.com/Purchase
@@ -54,12 +54,15 @@
             totalQuantity += quantity;
             const priceBlock = order.querySelector('.x-grid-cell-colPrice_OrderLines');
             const price = Number(priceBlock.textContent.replaceAll(",", ""));
+            const totalBlock = order.querySelector('.x-grid-cell-colTotal_OrderLines');
+            const total = Number(totalBlock.textContent.replaceAll(",", ""));
             products.push({
                 productId,
                 productName,
                 unit,
                 quantity,
                 price,
+                total,
             });
         }
 
@@ -70,7 +73,7 @@
         for (let i = 0; i < products.length; i++) {
             const product = products[i];
             const shipmentPrice = totalShipmentPrice * (product.quantity / totalQuantity);
-            const newPrice = product.price + shipmentPrice / product.quantity;
+            const newPrice = (product.total + shipmentPrice) / product.quantity;
             const newPriceRounded = Math.round(newPrice * 10000) / 10000;
             products[i].updatedPrice = newPriceRounded;
             const resultTr = document.createElement('tr');
