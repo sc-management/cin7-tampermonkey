@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SC Load Payroll (Native)
 // @namespace    http://tampermonkey.net/
-// @version      0.1.0
+// @version      0.1.1
 // @description  Fill my patriot using data from HomeBase and payroll sheet!
 // @author       Yihui Liu
 // @match        *://login.patriotsoftware.com/payroll/entry*
