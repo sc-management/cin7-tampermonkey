@@ -442,59 +442,128 @@
         return {matchedEmployees, missedEmployees, missedRoles};
     }
 
+// ---- money 输入框定位：Patriot 改 placeholder 时更抗揍 ----
+    function findMoneyInput(row, kind) {
+        // kind: 'tipsOwed' | 'tipsCash' | 'bonus'
+        const selectors = {
+            tipsOwed: [
+                'input[placeholder="Tips - Owed"]',
+                'input[placeholder^="Tips - Ow"]',
+                'input[placeholder*="Tips - Ow"]',
+            ],
+            tipsCash: [
+                'input[placeholder="Tips - Already Paid"]',
+                'input[placeholder^="Tips - Al"]',
+                'input[placeholder*="Already Paid"]',
+                'input[placeholder*="Paid"]',
+            ],
+            bonus: [
+                'input[placeholder="Bonus"]',
+                'input[placeholder*="Bonus"]',
+            ],
+        };
+
+        for (const sel of selectors[kind] || []) {
+            const el = row.querySelector(sel);
+            if (el) return el;
+        }
+        return null;
+    }
+
+    function hasAnyHoursToPay(value) {
+        const reg = Number(value?.regular_hours || 0);
+        const ot = Number(value?.overtime_hours || 0);
+        // 你如果以后要把 vacation/sick 也算“有数值的 hours”，在这里加：
+        // const vac = Number(value?.vacation_hours || 0);
+        // const sick = Number(value?.sick_hours || 0);
+        return reg > 0 || ot > 0;
+    }
+
     function fillPayroll(shakingEmployee, patriotId, name, missedRoles) {
         const rowClass = `payroll-entry-row-full_${patriotId}`;
-        const rows = document.querySelectorAll(`tr.${rowClass}`);
+        const rows = Array.from(document.querySelectorAll(`tr.${rowClass}`));
 
-        Object.entries(shakingEmployee.summary).forEach(([role, value]) => {
-            if (role === 'other') return;
+        // 目标：只在“第一个有 hours 的 pay-rate 行”填一次 tips/bonus
+        let moneyFilled = false;
 
-            // 先给所有行填 tips/bonus
-            rows.forEach((row) => {
-                const tipsInput = row.querySelector('input[placeholder="Tips - Owed"]');
-                const tipsCashInput = row.querySelector('input[placeholder="Tips - Already Paid"]');
-                const bonusInput = row.querySelector('input[placeholder="Bonus"]');
+        // 只处理非 other
+        const entries = Object.entries(shakingEmployee.summary || {}).filter(
+            ([role]) => role !== 'other'
+        );
 
-                if (tipsInput && !tipsInput.value) {
-                    setInputValue(tipsInput, shakingEmployee.tips || 0);
-                }
-                if (tipsCashInput && !tipsCashInput.value) {
-                    setInputValue(tipsCashInput, shakingEmployee.tips_cash || 0);
-                }
-                if (bonusInput && !bonusInput.value) {
-                    setInputValue(bonusInput, shakingEmployee.bonus || 0);
-                }
-            });
-
-            // 再按 pay rate 找到对应行，填 Regular / Overtime
-            const matchedRows = Array.from(rows).filter((row) => {
+        // 按 summary 逐个 role 匹配 pay rate，并填 hours
+        entries.forEach(([role, value]) => {
+            const matchedRows = rows.filter((row) => {
                 const rowPayRateStr = row.getAttribute('data-pay-rate');
                 const rowPayRate = Math.round(parseFloat(rowPayRateStr || '0') * 100) / 100;
                 const employeePayRate = Math.round((value.pay_rate || 0) * 100) / 100;
                 return rowPayRate === employeePayRate;
             });
 
-            let rowMatched = false;
-            matchedRows.forEach((row) => {
-                if (rowMatched) return;
+            let rowMatchedForHours = false;
+
+            for (const row of matchedRows) {
+                if (rowMatchedForHours) break;
 
                 const regularHourInput = row.querySelector('input[placeholder="Regular"]');
                 const overtimeHourInput = row.querySelector('input[placeholder="Overtime"]');
 
+                // 先填 hours
                 if (regularHourInput && !regularHourInput.value) {
                     setInputValue(regularHourInput, value.regular_hours || 0);
-                    rowMatched = true;
                 }
-
                 if (overtimeHourInput && !overtimeHourInput.value) {
                     setInputValue(overtimeHourInput, value.overtime_hours || 0);
                 }
-            });
 
-            if (!rowMatched) {
+                rowMatchedForHours = true;
+
+                // ✅ 再决定是否在这一行填 tips（只填一次，而且必须这一行“有 hours”）
+                if (!moneyFilled && hasAnyHoursToPay(value)) {
+                    const tipsOwedInput = findMoneyInput(row, 'tipsOwed');
+                    const tipsCashInput = findMoneyInput(row, 'tipsCash');
+                    const bonusInput = findMoneyInput(row, 'bonus');
+
+                    if (tipsOwedInput && !tipsOwedInput.value) {
+                        setInputValue(tipsOwedInput, shakingEmployee.tips || 0);
+                    }
+                    if (tipsCashInput && !tipsCashInput.value) {
+                        setInputValue(tipsCashInput, shakingEmployee.tips_cash || 0);
+                    }
+                    if (bonusInput && !bonusInput.value) {
+                        setInputValue(bonusInput, shakingEmployee.bonus || 0);
+                    }
+
+                    moneyFilled = true;
+                }
+            }
+
+            if (!rowMatchedForHours) {
                 missedRoles.push(`${name} > ${role}`);
             }
         });
+
+        // ✅ 兜底：所有 role 都是 0 小时，但只要有 tips/cash/bonus，也要填到第一条 pay-rate 行
+        if (!moneyFilled && rows.length) {
+            const tips = Number(shakingEmployee.tips || 0);
+            const tipsCash = Number(shakingEmployee.tips_cash || 0);
+            const bonus = Number(shakingEmployee.bonus || 0);
+
+            const hasMoney = tips !== 0 || tipsCash !== 0 || bonus !== 0;
+            if (hasMoney) {
+                const firstRow = rows[0];
+
+                const tipsOwedInput = findMoneyInput(firstRow, 'tipsOwed');
+                const tipsCashInput = findMoneyInput(firstRow, 'tipsCash');
+                const bonusInput = findMoneyInput(firstRow, 'bonus');
+
+                if (tipsOwedInput && !tipsOwedInput.value) setInputValue(tipsOwedInput, tips);
+                if (tipsCashInput && !tipsCashInput.value) setInputValue(tipsCashInput, tipsCash);
+                if (bonusInput && !bonusInput.value) setInputValue(bonusInput, bonus);
+
+                moneyFilled = true;
+            }
+        }
     }
 
     // --- 小浮动按钮 + 快捷键触发 ---
