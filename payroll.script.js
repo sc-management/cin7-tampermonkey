@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SC Load Payroll (Native)
 // @namespace    http://tampermonkey.net/
-// @version      0.1.1
+// @version      0.1.2
 // @description  Fill my patriot using data from HomeBase and payroll sheet!
 // @author       Yihui Liu
 // @match        *://login.patriotsoftware.com/payroll/entry*
@@ -491,13 +491,17 @@
             ([role]) => role !== 'other'
         );
 
+        // 同时薪条目按来源顺序对应页面行；已占用行不可再次匹配。
+        // 即使该行已有值也要占用，保证重复导入不会把同一条目填到下一行。
+        const usedRows = new Set();
+
         // 按 summary 逐个 role 匹配 pay rate，并填 hours
         entries.forEach(([role, value]) => {
             const matchedRows = rows.filter((row) => {
                 const rowPayRateStr = row.getAttribute('data-pay-rate');
                 const rowPayRate = Math.round(parseFloat(rowPayRateStr || '0') * 100) / 100;
                 const employeePayRate = Math.round((value.pay_rate || 0) * 100) / 100;
-                return rowPayRate === employeePayRate;
+                return !usedRows.has(row) && rowPayRate === employeePayRate;
             });
 
             let rowMatchedForHours = false;
@@ -507,6 +511,9 @@
 
                 const regularHourInput = row.querySelector('input[placeholder="Regular"]');
                 const overtimeHourInput = row.querySelector('input[placeholder="Overtime"]');
+
+                if (!regularHourInput && !overtimeHourInput) continue;
+                usedRows.add(row);
 
                 // 先填 hours
                 if (regularHourInput && !regularHourInput.value) {
