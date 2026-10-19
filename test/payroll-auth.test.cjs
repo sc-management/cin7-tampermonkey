@@ -136,7 +136,7 @@ function connectionFixture(options = {}) {
             if (isPoll) polls++;
             request.onload({status: 200, responseText: JSON.stringify({success: true, data: isPoll
                 ? { status: options.status || (polls === 1 ? 'pending' : 'approved') }
-                : { requestId: 'r'.repeat(32), expiresAt: new Date(Date.now() + 600000).toISOString() }})});
+                : { requestId: 'r'.repeat(32), expiresAt: new Date(Date.now() + 600000).toISOString(), ...options.connection }})});
         },
         showModal: (message) => messages.push(message),
     };
@@ -169,6 +169,37 @@ test('denial and expiry do not save access; network failures retain pending proo
     assert.equal(storage.has(storageKey), false);
     const retry = connectionFixture({storage}); await retry.connect();
     assert.equal(storage.get(storageKey), raw);
+});
+
+test('connection works when Patriot overrides Date.parse', async () => {
+    for (const implementation of ['return null;', 'return new Date(value);', 'throw new Error("Do not use the page parser");']) {
+        const f = connectionFixture();
+        vm.runInContext(`Date.parse = function(value) { ${implementation} };`, f.context);
+        await f.connect();
+        assert.match(f.storage.get(storageKey) || '', /^pgi\.[A-Za-z0-9_-]{43}$/);
+        assert.equal(f.tabs.length, 1);
+        assert.equal(f.tabs[0].closed, true);
+    }
+});
+
+test('malformed connection expiry never opens consent or stores authorization', async () => {
+    for (const expiresAt of [undefined, null, 1792433146336, {}, '', 'not-a-date']) {
+        const f = connectionFixture({connection: {expiresAt}});
+        await f.connect();
+        assert.equal(f.tabs.length, 0);
+        assert.equal(f.storage.has(storageKey), false);
+        assert.match(f.messages.at(-1).text, /Invalid connection response/);
+    }
+});
+
+test('pending connection still expires when the page date parser returns null', async () => {
+    const f = connectionFixture({connection: {expiresAt: new Date(Date.now() - 1000).toISOString()}});
+    vm.runInContext('Date.parse = function() { return null; };', f.context);
+    await f.connect();
+    assert.equal(f.storage.has(storageKey), false);
+    assert.equal(f.storage.has(pendingKey), false);
+    assert.equal(f.requests.filter(request => request.url.endsWith('/status')).length, 1);
+    assert.match(f.messages.at(-1).text, /Connection request expired/);
 });
 
 test('closing consent pauses connection and local Forget during approval cannot resurrect access', async () => {

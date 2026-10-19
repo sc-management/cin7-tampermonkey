@@ -1,10 +1,10 @@
 # SC userscripts
 
-## Payroll import (0.1.4)
+## Payroll import (0.1.5)
 
 The public payroll script contains no shared Tools partner key. Each operator connects their own browser once. Access is limited to saved payroll exports and stays valid until revoked, across the stores/weeks that operator may access.
 
-1. Update **SC Load Payroll (Native)** to `payroll.script.js` 0.1.4. Preserve its name/namespace so Tampermonkey updates the existing installation; accept the script's storage/menu/tab grants.
+1. Update **SC Load Payroll (Native)** to `payroll.script.js` 0.1.5. Preserve its name/namespace so Tampermonkey updates the existing installation; accept the script's storage/menu/tab grants.
 2. In Patriot, click **Connect Tools**. Sign into the Tools tab if needed. Check your account and the matching connection code, name the browser and click **Allow connection**.
 3. The script saves access automatically and returns to Patriot. Click **Load Payroll** and choose a saved week. Regular imports need no further login, token creation or pasting.
 4. View/revoke your browsers in **Tools user menu → Authorizations**. Administrators with `perm:manage` can view/revoke everyone's access under **User → Authorizations**, including search and active/revoked filters.
@@ -29,4 +29,4 @@ Other Cin7 scripts are unchanged. No production token rotation or deployment is 
 
 ### Verification
 
-`node --test test/payroll-auth.test.cjs test/payroll-import.test.cjs` (15 tests) and `node --check payroll.script.js`. Fixtures cover pairing/denial/retry/local Forget, credential boundaries, transport deadlines and unchanged filling. Extension installation and a real operator's import remain rollout smoke checks. Never commit credentials or real payroll fixtures.
+`node --test test/payroll-auth.test.cjs test/payroll-import.test.cjs` (18 tests) and `node --check payroll.script.js`. Fixtures cover pairing/denial/retry/local Forget, credential boundaries, transport deadlines and unchanged filling. They also reproduce Patriot overriding `Date.parse`: use `new Date(iso).getTime()` for API expiry timestamps and reuse that numeric deadline during polling. Reject missing/non-string/invalid expiry values. Extension installation and a real operator's import remain rollout smoke checks. Never commit credentials or real payroll fixtures.
