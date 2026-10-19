@@ -1,16 +1,18 @@
 # SC userscripts
 
-## Payroll import (0.1.5)
+## Payroll import (0.1.6)
 
 The public payroll script contains no shared Tools partner key. Each operator connects their own browser once. Access is limited to saved payroll exports and stays valid until revoked, across the stores/weeks that operator may access.
 
-1. Update **SC Load Payroll (Native)** to `payroll.script.js` 0.1.5. Preserve its name/namespace so Tampermonkey updates the existing installation; accept the script's storage/menu/tab grants.
+1. Update **SC Load Payroll (Native)** to `payroll.script.js` 0.1.6. Preserve its name/namespace so Tampermonkey updates the existing installation; accept the script's storage/menu/tab grants.
 2. In Patriot, click **Connect Tools**. Sign into the Tools tab if needed. Check your account and the matching connection code, name the browser and click **Allow connection**.
 3. The script saves access automatically and returns to Patriot. Click **Load Payroll** and choose a saved week. Regular imports need no further login, token creation or pasting.
 4. View/revoke your browsers in **Tools user menu → Authorizations**. Administrators with `perm:manage` can view/revoke everyone's access under **User → Authorizations**, including search and active/revoked filters.
 5. Tampermonkey's **Connect Tools / reconnect payroll** menu opens a new connection. **Forget payroll authorization on this browser** removes local access only; use Tools to revoke it. Closing the login tab or a network failure allows Connect Tools to resume a pending attempt within ten minutes. Permanent access never expires automatically.
 
-The script reads the latest saved export; submit the week in Tools first. Existing input values and same-rate role row allocation are preserved. Connecting does not fill payroll, and the script never submits/approves payroll in Patriot. PTO/snapshot/payroll calculation changes are not included.
+The script reads the latest saved export; submit the week in Tools first. Version 0.1.6 adds Vacation and Sick hours for each role, including leave-only rows and four-decimal hours. Role matching remains based on employee name, rate and row order; equal-rate roles stay separate. Existing input values are preserved, so clear old values before importing a replacement payroll. Connecting does not fill payroll, and the script never submits/approves payroll in Patriot or changes a salary employee's Pay checkbox.
+
+The script continues to use the production Tools endpoints. Missing Vacation/Sick fields in older exports are treated as zero. Local development submissions require the local Tools app; publishing this script does not deploy the backend snapshot feature or switch the script to localhost.
 
 ### Credential handling
 
@@ -29,4 +31,4 @@ Other Cin7 scripts are unchanged. No production token rotation or deployment is 
 
 ### Verification
 
-`node --test test/payroll-auth.test.cjs test/payroll-import.test.cjs` (18 tests) and `node --check payroll.script.js`. Fixtures cover pairing/denial/retry/local Forget, credential boundaries, transport deadlines and unchanged filling. They also reproduce Patriot overriding `Date.parse`: use `new Date(iso).getTime()` for API expiry timestamps and reuse that numeric deadline during polling. Reject missing/non-string/invalid expiry values. Extension installation and a real operator's import remain rollout smoke checks. Never commit credentials or real payroll fixtures.
+`node --test test/payroll-auth.test.cjs test/payroll-import.test.cjs` (23 tests) and `node --check payroll.script.js`. Fixtures cover pairing/denial/retry/local Forget, credential boundaries, transport deadlines, same-rate row allocation, Vacation/Sick precision and leave-only filling. They also reproduce Patriot overriding `Date.parse`: use `new Date(iso).getTime()` for API expiry timestamps and reuse that numeric deadline during polling. Reject missing/non-string/invalid expiry values. Extension installation and a real operator's import remain rollout smoke checks. Never commit credentials or real payroll fixtures.
