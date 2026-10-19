@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SC Load Payroll (Native)
 // @namespace    http://tampermonkey.net/
-// @version      0.1.5
+// @version      0.1.6
 // @updateURL    https://raw.githubusercontent.com/sc-management/cin7-tampermonkey/main/payroll.script.js
 // @downloadURL  https://raw.githubusercontent.com/sc-management/cin7-tampermonkey/main/payroll.script.js
 // @description  Fill my patriot using data from HomeBase and payroll sheet!
@@ -358,7 +358,9 @@
                     employee.employee.name_set.every((name) => typeof name === 'string' && name.trim()))) &&
             employee.summary && typeof employee.summary === 'object' && !Array.isArray(employee.summary) &&
             Object.values(employee.summary).every((role) =>
-                role && ['regular_hours', 'overtime_hours', 'pay_rate'].every((key) => number(role[key]))
+                role && ['regular_hours', 'overtime_hours', 'pay_rate'].every((key) => number(role[key])) &&
+                ['vacation_hours', 'sick_hours'].every((key) => role[key] === undefined ||
+                    (number(role[key]) && role[key] >= 0))
             )
         );
     }
@@ -384,6 +386,8 @@
                     data: JSON.stringify(body), anonymous: true, redirect: 'error', timeout: 20000,
                     onload(res) {
                         if (res.status < 200 || res.status >= 300) {
+                            let upgradeRequired = false;
+                            try { upgradeRequired = JSON.parse(res.responseText)?.errorCode === 'PAYROLL_IMPORT_UPGRADE_REQUIRED'; } catch {}
                             const messages = {
                                 401: 'Authorization is no longer valid. Click Connect Tools again.',
                                 403: 'Your Tools account does not have the required access.',
@@ -392,7 +396,7 @@
                                 410: 'Connection request expired. Click Connect Tools again.',
                                 429: 'Too many requests. Please wait a minute and try again.',
                             };
-                            const error = new PayrollImportError(messages[res.status] || 'Tools is unavailable. Please try again later.');
+                            const error = new PayrollImportError(upgradeRequired ? 'Update the payroll script to import Vacation and Sick hours.' : messages[res.status] || 'Tools is unavailable. Please try again later.');
                             error.status = res.status;
                             finish(error); return;
                         }
@@ -412,7 +416,7 @@
 
     async function requestPayroll(credential, patriotId, startDate) {
         try {
-            const data = await payrollRequest(PAYROLL_IMPORT_URL, {patriotId, startDate}, `PayrollImport ${credential}`);
+            const data = await payrollRequest(PAYROLL_IMPORT_URL, {patriotId, startDate, schemaVersion: 2}, `PayrollImport ${credential}`);
             if (data.patriotId !== patriotId || data.startDate !== startDate || !validPayrollPayload(data.payroll)) {
                 throw new PayrollImportError('Unexpected payroll response. Nothing was filled.');
             }
@@ -628,10 +632,9 @@
     function hasAnyHoursToPay(value) {
         const reg = Number(value?.regular_hours || 0);
         const ot = Number(value?.overtime_hours || 0);
-        // 你如果以后要把 vacation/sick 也算“有数值的 hours”，在这里加：
-        // const vac = Number(value?.vacation_hours || 0);
-        // const sick = Number(value?.sick_hours || 0);
-        return reg > 0 || ot > 0;
+        const vac = Number(value?.vacation_hours || 0);
+        const sick = Number(value?.sick_hours || 0);
+        return reg > 0 || ot > 0 || vac > 0 || sick > 0;
     }
 
     function fillPayroll(shakingEmployee, patriotId, name, missedRoles) {
@@ -666,8 +669,10 @@
 
                 const regularHourInput = row.querySelector('input[placeholder="Regular"]');
                 const overtimeHourInput = row.querySelector('input[placeholder="Overtime"]');
+                const vacationInput = row.querySelector('input[placeholder="Vacation"]');
+                const sickInput = row.querySelector('input[placeholder="Sick"]');
 
-                if (!regularHourInput && !overtimeHourInput) continue;
+                if (!regularHourInput && !overtimeHourInput && !vacationInput && !sickInput) continue;
                 usedRows.add(row);
 
                 // 先填 hours
@@ -676,6 +681,17 @@
                 }
                 if (overtimeHourInput && !overtimeHourInput.value) {
                     setInputValue(overtimeHourInput, value.overtime_hours || 0);
+                }
+                for (const [label, input, hours] of [
+                    ['Vacation', vacationInput, value.vacation_hours || 0],
+                    ['Sick', sickInput, value.sick_hours || 0],
+                ]) {
+                    if (!input || input.disabled || input.readOnly) {
+                        if (hours > 0) missedRoles.push(`${name} > ${role}: ${label} input unavailable`);
+                    } else if (!input.value) {
+                        // Strings retain leave precision through the existing money/regular setter.
+                        setInputValue(input, String(hours));
+                    }
                 }
 
                 rowMatchedForHours = true;
