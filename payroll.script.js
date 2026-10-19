@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SC Load Payroll (Native)
 // @namespace    http://tampermonkey.net/
-// @version      0.1.4
+// @version      0.1.5
 // @updateURL    https://raw.githubusercontent.com/sc-management/cin7-tampermonkey/main/payroll.script.js
 // @downloadURL  https://raw.githubusercontent.com/sc-management/cin7-tampermonkey/main/payroll.script.js
 // @description  Fill my patriot using data from HomeBase and payroll sheet!
@@ -459,7 +459,9 @@
                 GM_setValue(PAYROLL_PENDING_KEY, pending);
             }
             const connection = await payrollRequest(CONNECTION_URL, {credentialHash: await hashPayrollValue(pending.credential)});
-            if (!/^[A-Za-z0-9_-]{32}$/.test(connection.requestId) || !Number.isFinite(Date.parse(connection.expiresAt))) {
+            // Patriot overrides Date.parse and returns null for valid API ISO timestamps.
+            const expiresAtMs = typeof connection.expiresAt === 'string' ? new Date(connection.expiresAt).getTime() : NaN;
+            if (!/^[A-Za-z0-9_-]{32}$/.test(connection.requestId) || !Number.isFinite(expiresAtMs)) {
                 throw new PayrollImportError('Invalid connection response. Please try again.');
             }
             const code = (await hashPayrollValue(connection.requestId)).slice(0, 8).toUpperCase();
@@ -483,7 +485,7 @@
                     throw new PayrollImportError('Connection declined. No authorization was saved.');
                 }
                 if (result.status !== 'pending') throw new PayrollImportError('Unexpected connection status. Please try again.');
-                if (Date.now() >= Date.parse(connection.expiresAt)) {
+                if (Date.now() >= expiresAtMs) {
                     GM_deleteValue(PAYROLL_PENDING_KEY);
                     throw new PayrollImportError('Connection request expired. Click Connect Tools again.');
                 }
