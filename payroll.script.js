@@ -1,19 +1,26 @@
 // ==UserScript==
 // @name         SC Load Payroll (Native)
 // @namespace    http://tampermonkey.net/
-// @version      0.1.2
+// @version      0.1.4
+// @updateURL    https://raw.githubusercontent.com/sc-management/cin7-tampermonkey/main/payroll.script.js
+// @downloadURL  https://raw.githubusercontent.com/sc-management/cin7-tampermonkey/main/payroll.script.js
 // @description  Fill my patriot using data from HomeBase and payroll sheet!
 // @author       Yihui Liu
-// @match        *://login.patriotsoftware.com/payroll/entry*
-// @match        *://login.patriotsoftware.com/payroll/recallsavedentry*
+// @match        https://login.patriotsoftware.com/payroll/entry*
+// @match        https://login.patriotsoftware.com/payroll/recallsavedentry*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_openInTab
+// @noframes
 // @connect      sc-tools-backend-production.up.railway.app
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    console.log('SC Load Payroll (Clean UI) loaded');
 
     function injectStyles() {
         if (document.getElementById('sclp-style')) return;
@@ -322,68 +329,218 @@
     }
 
     // --- 核心逻辑：请求 + 填值 ---
-    function loadPayroll({startDate, endDate}) {
-        const headerId = document.querySelector('.header-id');
-        if (!headerId) {
-            showModal({title: 'Error', text: 'header-id not found', isError: true});
-            return;
-        }
+    const PAYROLL_AUTH_STORAGE_KEY = 'sclp.payrollAuthorization.v1';
+    const PAYROLL_IMPORT_URL = 'https://sc-tools-backend-production.up.railway.app/payroll-imports/redeem';
+    const TOOLS_PAYROLL_URL = 'https://tools.shakingcrab.com/account/authorizations';
+    const PAYROLL_PENDING_KEY = 'sclp.payrollConnection.v1';
+    const CONNECTION_URL = PAYROLL_IMPORT_URL.replace('/redeem', '/connections');
+    let importPending = false;
+    let connecting = false;
+    class PayrollImportError extends Error {}
 
-        const patriotId = headerId.textContent.trim().replace(/\s+/g, '');
-        if (!patriotId) {
-            showModal({title: 'Error', text: 'Invalid patriot ID', isError: true});
-            return;
-        }
+    function currentPatriotId() {
+        return document.querySelector('.header-id')?.textContent.trim().replace(/\s+/g, '') || '';
+    }
 
-        // 最新 API
-        const apiToken = '300b1d5e-0cfc-4576-a933-404a1108176e';
-        const url = `https://sc-tools-backend-production.up.railway.app/partner/patriot/${encodeURIComponent(
-            patriotId
-        )}/payroll-export/${encodeURIComponent(startDate)}?api_token=${encodeURIComponent(
-            apiToken
-        )}`;
+    function isPatriotPayrollPage() {
+        return location.protocol === 'https:' &&
+            location.hostname === 'login.patriotsoftware.com' &&
+            /^\/payroll\/(entry|recallsavedentry)(?:\/|$)/.test(location.pathname);
+    }
 
-        console.log('[sclp] Requesting payroll:', url);
+    function validPayrollPayload(payroll) {
+        const number = (value) => typeof value === 'number' && Number.isFinite(value);
+        return Array.isArray(payroll) && payroll.every((employee) =>
+            employee && typeof employee.name === 'string' && employee.name.trim() &&
+            ['tips', 'tips_cash', 'bonus'].every((key) => employee[key] == null || number(employee[key])) &&
+            (!employee.employee?.name_set ||
+                (Array.isArray(employee.employee.name_set) && employee.employee.name_set.length > 0 &&
+                    employee.employee.name_set.every((name) => typeof name === 'string' && name.trim()))) &&
+            employee.summary && typeof employee.summary === 'object' && !Array.isArray(employee.summary) &&
+            Object.values(employee.summary).every((role) =>
+                role && ['regular_hours', 'overtime_hours', 'pay_rate'].every((key) => number(role[key]))
+            )
+        );
+    }
 
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url,
-            onload: function (res) {
-                try {
-                    const data = JSON.parse(res.responseText);
-
-                    if (!data.success) {
-                        showModal({
-                            title: 'Error',
-                            text: data.message || 'Unknown API error',
-                            isError: true,
-                        });
-                        return;
-                    }
-
-                    const payroll = data.data || [];
-                    const result = fillPayrolls(payroll);
-
-                    let text = 'Loaded successfully.\n\n';
-                    text += `Matched employees: ${result.matchedEmployees}\n`;
-                    if (result.missedEmployees.length) {
-                        text += '\nEmployees not found:\n' + result.missedEmployees.join(', ') + '\n';
-                    }
-                    if (result.missedRoles.length) {
-                        text += '\nRoles not found:\n' + result.missedRoles.join(', ') + '\n';
-                    }
-
-                    showModal({title: 'Finished', text});
-                } catch (err) {
-                    console.error(err);
-                    showModal({title: 'Error', text: String(err), isError: true});
-                }
-            },
-            onerror: function (err) {
-                console.error(err);
-                showModal({title: 'Error', text: 'Network error: ' + err, isError: true});
-            },
+    // A manual deadline also works when Tampermonkey uses fetch for redirect:error.
+    function payrollRequest(url, body, authorization) {
+        return new Promise((resolve, reject) => {
+            let request, settled = false;
+            const finish = (error, data) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(deadline);
+                if (error) reject(error); else resolve(data);
+            };
+            const deadline = setTimeout(() => {
+                finish(new PayrollImportError('Request timed out. Please try again.'));
+                request?.abort();
+            }, 20000);
+            try {
+                request = GM_xmlhttpRequest({
+                    method: 'POST', url,
+                    headers: {'Content-Type': 'application/json', ...(authorization ? {Authorization: authorization} : {})},
+                    data: JSON.stringify(body), anonymous: true, redirect: 'error', timeout: 20000,
+                    onload(res) {
+                        if (res.status < 200 || res.status >= 300) {
+                            const messages = {
+                                401: 'Authorization is no longer valid. Click Connect Tools again.',
+                                403: 'Your Tools account does not have the required access.',
+                                404: 'The requested connection or saved payroll export was not found.',
+                                409: 'This request has changed or needs review in Tools.',
+                                410: 'Connection request expired. Click Connect Tools again.',
+                                429: 'Too many requests. Please wait a minute and try again.',
+                            };
+                            const error = new PayrollImportError(messages[res.status] || 'Tools is unavailable. Please try again later.');
+                            error.status = res.status;
+                            finish(error); return;
+                        }
+                        try {
+                            const envelope = JSON.parse(res.responseText);
+                            if ((res.finalUrl && res.finalUrl !== url) || !envelope.success || !envelope.data) throw new Error();
+                            finish(null, envelope.data);
+                        } catch { finish(new PayrollImportError('Unexpected Tools response. Please try again.')); }
+                    },
+                    onerror() { finish(new PayrollImportError('Network error. Please try again.')); },
+                    ontimeout() { finish(new PayrollImportError('Request timed out. Please try again.')); },
+                    onabort() { finish(new PayrollImportError('Request cancelled. Please try again.')); },
+                });
+            } catch { finish(new PayrollImportError('Unable to contact Tools. Please try again.')); }
         });
+    }
+
+    async function requestPayroll(credential, patriotId, startDate) {
+        try {
+            const data = await payrollRequest(PAYROLL_IMPORT_URL, {patriotId, startDate}, `PayrollImport ${credential}`);
+            if (data.patriotId !== patriotId || data.startDate !== startDate || !validPayrollPayload(data.payroll)) {
+                throw new PayrollImportError('Unexpected payroll response. Nothing was filled.');
+            }
+            return data.payroll;
+        } catch (error) {
+            if (error.status === 401 && GM_getValue(PAYROLL_AUTH_STORAGE_KEY, '') === credential) {
+                GM_deleteValue(PAYROLL_AUTH_STORAGE_KEY);
+                refreshPayrollButton();
+            }
+            throw error;
+        }
+    }
+
+    function savedPayrollCredential() {
+        const credential = GM_getValue(PAYROLL_AUTH_STORAGE_KEY, '');
+        return typeof credential === 'string' && /^pgi\.[A-Za-z0-9_-]{43}$/.test(credential) ? credential : '';
+    }
+
+    function refreshPayrollButton() {
+        const button = document.querySelector('.sclp-fab');
+        if (button) {
+            button.textContent = connecting ? 'Connecting Tools…' : savedPayrollCredential() ? 'Load Payroll' : 'Connect Tools';
+            button.disabled = connecting;
+        }
+    }
+
+    async function hashPayrollValue(value) {
+        const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+        return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
+    }
+
+    async function connectTools() {
+        if (connecting || !isPatriotPayrollPage()) return;
+        connecting = true;
+        refreshPayrollButton();
+        let tab, pending;
+        try {
+            pending = GM_getValue(PAYROLL_PENDING_KEY, null);
+            if (!pending || !/^pgi\.[A-Za-z0-9_-]{43}$/.test(pending.credential) ||
+                !Number.isFinite(pending.createdAt) || Date.now() - pending.createdAt > 600000) {
+                const bytes = crypto.getRandomValues(new Uint8Array(32));
+                const credential = 'pgi.' + btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+                pending = {credential, createdAt: Date.now()};
+                GM_setValue(PAYROLL_PENDING_KEY, pending);
+            }
+            const connection = await payrollRequest(CONNECTION_URL, {credentialHash: await hashPayrollValue(pending.credential)});
+            if (!/^[A-Za-z0-9_-]{32}$/.test(connection.requestId) || !Number.isFinite(Date.parse(connection.expiresAt))) {
+                throw new PayrollImportError('Invalid connection response. Please try again.');
+            }
+            const code = (await hashPayrollValue(connection.requestId)).slice(0, 8).toUpperCase();
+            const url = `${TOOLS_PAYROLL_URL}/connect?request=${encodeURIComponent(connection.requestId)}`;
+            tab = GM_openInTab(url, {active: true, insert: true});
+            showModal({title: 'Connect Tools', text: `Sign in and allow the connection in the Tools tab.\n\nConnection code: ${code.slice(0, 4)}-${code.slice(4)}\n\nCheck that the code matches. You can dismiss this message while waiting.`});
+            // Poll once even after a tab closes: approval may have completed just before closing.
+            while (true) {
+                if (GM_getValue(PAYROLL_PENDING_KEY, null)?.credential !== pending.credential) return;
+                const result = await payrollRequest(`${CONNECTION_URL}/status`, {requestId: connection.requestId}, `PayrollConnect ${pending.credential}`);
+                if (GM_getValue(PAYROLL_PENDING_KEY, null)?.credential !== pending.credential) return;
+                if (result.status === 'approved') {
+                    GM_setValue(PAYROLL_AUTH_STORAGE_KEY, pending.credential);
+                    GM_deleteValue(PAYROLL_PENDING_KEY);
+                    tab?.close();
+                    showModal({title: 'Tools connected', text: 'This browser will remember your authorization until you revoke it. Click Load Payroll to choose a week.'});
+                    return;
+                }
+                if (result.status === 'denied') {
+                    GM_deleteValue(PAYROLL_PENDING_KEY);
+                    throw new PayrollImportError('Connection declined. No authorization was saved.');
+                }
+                if (result.status !== 'pending') throw new PayrollImportError('Unexpected connection status. Please try again.');
+                if (Date.now() >= Date.parse(connection.expiresAt)) {
+                    GM_deleteValue(PAYROLL_PENDING_KEY);
+                    throw new PayrollImportError('Connection request expired. Click Connect Tools again.');
+                }
+                if (tab?.closed) throw new PayrollImportError('Connection window closed. Click Connect Tools to resume.');
+                await new Promise((resolve) => setTimeout(resolve, 6000));
+            }
+        } catch (error) {
+            if ([401, 404, 409, 410].includes(error.status) && GM_getValue(PAYROLL_PENDING_KEY, null)?.credential === pending?.credential) {
+                GM_deleteValue(PAYROLL_PENDING_KEY);
+            }
+            showModal({title: 'Connection not completed', text: error instanceof PayrollImportError ? error.message : 'Unable to connect. Please try again.', isError: true});
+        } finally {
+            connecting = false;
+            refreshPayrollButton();
+        }
+    }
+
+    function openPayroll() {
+        if (connecting) return;
+        if (!savedPayrollCredential()) { void connectTools(); return; }
+        showDateSelector(loadPayroll);
+    }
+
+    async function loadPayroll({startDate}) {
+        if (importPending) return;
+        if (!isPatriotPayrollPage()) return;
+        const patriotId = currentPatriotId();
+        if (!/^[A-Za-z0-9-]{1,45}$/.test(patriotId) || !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+            showModal({title: 'Error', text: 'Select a valid payroll week and Patriot company.', isError: true});
+            return;
+        }
+
+        importPending = true;
+        try {
+            const credential = savedPayrollCredential();
+            if (!credential) { await connectTools(); return; }
+            const payroll = await requestPayroll(credential, patriotId, startDate);
+            if (!isPatriotPayrollPage() || currentPatriotId() !== patriotId) {
+                throw new PayrollImportError('The Patriot company changed. Nothing was filled; select the payroll again.');
+            }
+            GM_setValue(PAYROLL_AUTH_STORAGE_KEY, credential);
+            const result = fillPayrolls(payroll);
+            let text = 'Loaded successfully.\n\n';
+            text += `Matched employees: ${result.matchedEmployees}\n`;
+            if (result.missedEmployees.length) {
+                text += '\nEmployees not found:\n' + result.missedEmployees.join(', ') + '\n';
+            }
+            if (result.missedRoles.length) {
+                text += '\nRoles not found:\n' + result.missedRoles.join(', ') + '\n';
+            }
+            showModal({title: 'Finished', text});
+        } catch (error) {
+            // Never display raw transport errors: extensions can include request headers.
+            showModal({title: 'Error', text: error instanceof PayrollImportError ? error.message : 'Payroll import failed. Please try again.', isError: true});
+        } finally {
+            importPending = false;
+        }
     }
 
 
@@ -402,7 +559,6 @@
             }
         });
 
-        console.log('Patriot employees map:', patriotIdMap);
 
         let missedEmployees = [];
         let missedRoles = [];
@@ -435,9 +591,6 @@
         missedEmployees = Array.from(new Set(missedEmployees));
         missedRoles = Array.from(new Set(missedRoles));
 
-        console.log('Matched employees:', matchedEmployees);
-        console.log('Missed employees:', missedEmployees);
-        console.log('Missed roles:', missedRoles);
 
         return {matchedEmployees, missedEmployees, missedRoles};
     }
@@ -580,14 +733,22 @@
 
         const btn = document.createElement('button');
         btn.className = 'sclp-fab';
-        btn.textContent = 'Load Payroll';
-        btn.addEventListener('click', () => {
-            showDateSelector(loadPayroll);
-        });
+        btn.addEventListener('click', openPayroll);
         document.body.appendChild(btn);
+        refreshPayrollButton();
     }
 
     function setup() {
+        GM_registerMenuCommand('Connect Tools / reconnect payroll', () => { void connectTools(); });
+        GM_registerMenuCommand('Open Tools payroll authorizations', () => {
+            GM_openInTab(TOOLS_PAYROLL_URL, {active: true, insert: true});
+        });
+        GM_registerMenuCommand('Forget payroll authorization on this browser', () => {
+            GM_deleteValue(PAYROLL_AUTH_STORAGE_KEY);
+            GM_deleteValue(PAYROLL_PENDING_KEY);
+            refreshPayrollButton();
+            showModal({title: 'Authorization removed locally', text: 'Click Connect Tools to reconnect. To revoke access everywhere, use your user menu > Authorizations in Tools.'});
+        });
         injectStyles(); // 🆕 先注入样式
         createFloatingButton();
 
@@ -595,7 +756,7 @@
         window.addEventListener('keydown', (e) => {
             if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'p') {
                 e.preventDefault();
-                showDateSelector(loadPayroll);
+                openPayroll();
             }
         });
     }
