@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SC Load Payroll (Native)
 // @namespace    http://tampermonkey.net/
-// @version      0.1.6
+// @version      0.1.7
 // @updateURL    https://raw.githubusercontent.com/sc-management/cin7-tampermonkey/main/payroll.script.js
 // @downloadURL  https://raw.githubusercontent.com/sc-management/cin7-tampermonkey/main/payroll.script.js
 // @description  Fill my patriot using data from HomeBase and payroll sheet!
@@ -15,7 +15,7 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_openInTab
 // @noframes
-// @connect      sc-tools-backend-production.up.railway.app
+// @connect      tools-api.shakingcrab.net
 // ==/UserScript==
 
 (function () {
@@ -330,7 +330,7 @@
 
     // --- 核心逻辑：请求 + 填值 ---
     const PAYROLL_AUTH_STORAGE_KEY = 'sclp.payrollAuthorization.v1';
-    const PAYROLL_IMPORT_URL = 'https://sc-tools-backend-production.up.railway.app/payroll-imports/redeem';
+    const PAYROLL_IMPORT_URL = 'https://tools-api.shakingcrab.net/payroll-imports/redeem';
     const TOOLS_PAYROLL_URL = 'https://tools.shakingcrab.com/account/authorizations';
     const PAYROLL_PENDING_KEY = 'sclp.payrollConnection.v1';
     const CONNECTION_URL = PAYROLL_IMPORT_URL.replace('/redeem', '/connections');
