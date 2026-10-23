@@ -45,7 +45,7 @@ test('connected import uses a dedicated header and remembers authorization only 
     assert.equal(f.requests[0].headers.Authorization, `PayrollImport ${credential}`);
     assert.equal(f.requests[0].anonymous, true);
     assert.equal(f.requests[0].redirect, 'error');
-    assert.equal(f.requests[0].url, 'https://sc-tools-backend-production.up.railway.app/payroll-imports/redeem');
+    assert.equal(f.requests[0].url, 'https://tools-api.shakingcrab.net/payroll-imports/redeem');
     assert.ok(!f.requests[0].data.includes(credential));
     assert.ok(!JSON.stringify(f.messages).includes(credential));
     const reloaded = fixture({storage: f.storage});

@@ -1,10 +1,10 @@
 # SC userscripts
 
-## Payroll import (0.1.6)
+## Payroll import (0.1.7)
 
 The public payroll script contains no shared Tools partner key. Each operator connects their own browser once. Access is limited to saved payroll exports and stays valid until revoked, across the stores/weeks that operator may access.
 
-1. Update **SC Load Payroll (Native)** to `payroll.script.js` 0.1.6. Preserve its name/namespace so Tampermonkey updates the existing installation; accept the script's storage/menu/tab grants.
+1. Update **SC Load Payroll (Native)** to `payroll.script.js` 0.1.7. Preserve its name/namespace so Tampermonkey updates the existing installation and retains its stored authorization. Accept access to `tools-api.shakingcrab.net` if Tampermonkey prompts after the update.
 2. In Patriot, click **Connect Tools**. Sign into the Tools tab if needed. Check your account and the matching connection code, name the browser and click **Allow connection**.
 3. The script saves access automatically and returns to Patriot. Click **Load Payroll** and choose a saved week. Regular imports need no further login, token creation or pasting.
 4. View/revoke your browsers in **Tools user menu → Authorizations**. Administrators with `perm:manage` can view/revoke everyone's access under **User → Authorizations**, including search and active/revoked filters.
@@ -12,7 +12,7 @@ The public payroll script contains no shared Tools partner key. Each operator co
 
 The script reads the latest saved export; submit the week in Tools first. Version 0.1.6 adds Vacation and Sick hours for each role, including leave-only rows and four-decimal hours. Role matching remains based on employee name, rate and row order; equal-rate roles stay separate. Existing input values are preserved, so clear old values before importing a replacement payroll. Connecting does not fill payroll, and the script never submits/approves payroll in Patriot or changes a salary employee's Pay checkbox.
 
-The script continues to use the production Tools endpoints. Missing Vacation/Sick fields in older exports are treated as zero. Local development submissions require the local Tools app; publishing this script does not deploy the backend snapshot feature or switch the script to localhost.
+Version 0.1.7 uses `https://tools-api.shakingcrab.net` directly instead of the legacy Railway forwarding address. This remains a public HTTPS endpoint because the script runs in the operator's browser. The Tools login/consent page stays at `https://tools.shakingcrab.com`; existing authorizations remain valid. Missing Vacation/Sick fields in older exports are treated as zero. Local development submissions require the local Tools app.
 
 ### Credential handling
 
