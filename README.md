@@ -1,10 +1,10 @@
 # SC userscripts
 
-## Payroll import (0.1.7)
+## Payroll import (0.1.8)
 
 The public payroll script contains no shared Tools partner key. Each operator connects their own browser once. Access is limited to saved payroll exports and stays valid until revoked, across the stores/weeks that operator may access.
 
-1. Update **SC Load Payroll (Native)** to `payroll.script.js` 0.1.7. Preserve its name/namespace so Tampermonkey updates the existing installation and retains its stored authorization. Accept access to `tools-api.shakingcrab.net` if Tampermonkey prompts after the update.
+1. Update **SC Load Payroll (Native)** to `payroll.script.js` 0.1.8. Preserve its name/namespace so Tampermonkey updates the existing installation and retains its stored authorization. Accept access to `tools-api.shakingcrab.net` if Tampermonkey prompts after the update.
 2. In Patriot, click **Connect Tools**. Sign into the Tools tab if needed. Check your account and the matching connection code, name the browser and click **Allow connection**.
 3. The script saves access automatically and returns to Patriot. Click **Load Payroll** and choose a saved week. Regular imports need no further login, token creation or pasting.
 4. View/revoke your browsers in **Tools user menu → Authorizations**. Administrators with `perm:manage` can view/revoke everyone's access under **User → Authorizations**, including search and active/revoked filters.
@@ -13,6 +13,8 @@ The public payroll script contains no shared Tools partner key. Each operator co
 The script reads the latest saved export; submit the week in Tools first. Version 0.1.6 adds Vacation and Sick hours for each role, including leave-only rows and four-decimal hours. Role matching remains based on employee name, rate and row order; equal-rate roles stay separate. Existing input values are preserved, so clear old values before importing a replacement payroll. Connecting does not fill payroll, and the script never submits/approves payroll in Patriot or changes a salary employee's Pay checkbox.
 
 Version 0.1.7 uses `https://tools-api.shakingcrab.net` directly instead of the legacy Railway forwarding address. This remains a public HTTPS endpoint because the script runs in the operator's browser. The Tools login/consent page stays at `https://tools.shakingcrab.com`; existing authorizations remain valid. Missing Vacation/Sick fields in older exports are treated as zero. Local development submissions require the local Tools app.
+
+Version 0.1.8 supports Patriot's virtualized employee grid. **Load Payroll** still imports directly: it waits for the initial grid, scrolls through the full roster, checks the employee count, then fills each matched employee while their rows are mounted. No manual scrolling or extra matching step is required. It restores the original scroll position afterward. Incomplete roster loading stops before any fields are filled; missing/ambiguous names or unmatched roles are reported for review. Existing values, same-rate role order, authorization, and leave handling are preserved.
 
 ### Credential handling
 
@@ -31,4 +33,4 @@ Other Cin7 scripts are unchanged. No production token rotation or deployment is 
 
 ### Verification
 
-`node --test test/payroll-auth.test.cjs test/payroll-import.test.cjs` (23 tests) and `node --check payroll.script.js`. Fixtures cover pairing/denial/retry/local Forget, credential boundaries, transport deadlines, same-rate row allocation, Vacation/Sick precision and leave-only filling. They also reproduce Patriot overriding `Date.parse`: use `new Date(iso).getTime()` for API expiry timestamps and reuse that numeric deadline during polling. Reject missing/non-string/invalid expiry values. Extension installation and a real operator's import remain rollout smoke checks. Never commit credentials or real payroll fixtures.
+`node --test test/*.test.cjs` (33 tests) and `node --check payroll.script.js`. Fixtures cover pairing/denial/retry/local Forget, credential boundaries, transport deadlines, same-rate row allocation, Vacation/Sick precision and leave-only filling. They also reproduce Patriot overriding `Date.parse`: use `new Date(iso).getTime()` for API expiry timestamps and reuse that numeric deadline during polling. Reject missing/non-string/invalid expiry values. Virtual-grid fixtures also cover delayed initialization, detached/remounted rows, offscreen hourly and salary employees, overlapping windows, repeated imports, incomplete rosters, ambiguous names, context changes, and the legacy static table. The selectors and scroll container were checked against a freshly reloaded Patriot page in Chrome; installing 0.1.8 and a real operator's import remain rollout smoke checks. Never commit credentials or real payroll fixtures.

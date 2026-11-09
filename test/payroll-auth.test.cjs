@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const { webcrypto, createHash } = require('node:crypto');
 
 const source = fs.readFileSync(path.join(__dirname, '../payroll.script.js'), 'utf8');
-const helpers = source.slice(source.indexOf('    const PAYROLL_AUTH_STORAGE_KEY'), source.indexOf('    function fillPayrolls('));
+const helpers = source.slice(source.indexOf('    const PAYROLL_AUTH_STORAGE_KEY'), source.indexOf('    // --- Virtualized payroll grid ---'));
 const credential = `pgi.${'a'.repeat(43)}`; // Synthetic, never a production credential.
 const storageKey = 'sclp.payrollAuthorization.v1';
 const payroll = [{name: 'Test Employee', tips: 2, tips_cash: 0, bonus: 0, summary: {Kitchen: {regular_hours: 8, overtime_hours: 0, pay_rate: 20}}}];
@@ -29,7 +29,7 @@ function fixture(options = {}) {
             request.onload({status: options.status || 200, responseText: options.response || JSON.stringify({success: true, data: {patriotId: company, startDate: '2026-10-12', payroll}})});
         },
         showModal: (message) => messages.push(message),
-        fillPayrolls: (data) => { fills.push(data); return {matchedEmployees: data.length, missedEmployees: [], missedRoles: []}; },
+        fillPayrolls: (data) => { fills.push(data); if (options.fillPayrolls) return options.fillPayrolls(data); return {scannedEmployees: data.length, matchedEmployees: data.length, missedEmployees: [], missedRoles: [], ambiguousEmployees: []}; },
     };
     vm.createContext(context);
     vm.runInContext(helpers, context);
@@ -220,4 +220,29 @@ test('manual network deadline aborts requests even without a Tampermonkey timeou
     const f = fixture({transport: () => ({abort() {aborted = true;}})});
     f.context.setTimeout = (callback) => setTimeout(callback, 5);
     await f.load(); assert.equal(aborted, true); assert.equal(f.fills.length, 0);
+});
+
+
+test('async grid import stays locked and reports completion only after all rows finish', async () => {
+    let finish;
+    const f = fixture({fillPayrolls: () => new Promise(resolve => {finish = resolve;})});
+    const pending = f.load();
+    while (!finish) await Promise.resolve();
+    assert.equal(f.messages.length, 0);
+    await f.load();
+    assert.equal(f.requests.length, 1);
+    finish({scannedEmployees: 36, matchedEmployees: 1, missedEmployees: [], missedRoles: [], ambiguousEmployees: []});
+    await pending;
+    assert.equal(f.messages[0].title, 'Finished');
+    assert.match(f.messages[0].text, /Employees scanned: 36/);
+});
+
+test('partial matching reports review needed instead of a misleading successful import', async () => {
+    const f = fixture({fillPayrolls: async () => ({scannedEmployees: 36, matchedEmployees: 0, missedEmployees: ['Missing Worker'], missedRoles: [], ambiguousEmployees: ['Ambiguous Worker']})});
+    await f.load();
+    assert.equal(f.messages[0].title, 'Review needed');
+    assert.equal(f.messages[0].isError, true);
+    assert.match(f.messages[0].text, /Missing Worker/);
+    assert.match(f.messages[0].text, /Multiple name matches/);
+    assert.doesNotMatch(f.messages[0].text, /Loaded successfully/);
 });

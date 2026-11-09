@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SC Load Payroll (Native)
 // @namespace    http://tampermonkey.net/
-// @version      0.1.7
+// @version      0.1.8
 // @updateURL    https://raw.githubusercontent.com/sc-management/cin7-tampermonkey/main/payroll.script.js
 // @downloadURL  https://raw.githubusercontent.com/sc-management/cin7-tampermonkey/main/payroll.script.js
 // @description  Fill my patriot using data from HomeBase and payroll sheet!
@@ -438,8 +438,8 @@
     function refreshPayrollButton() {
         const button = document.querySelector('.sclp-fab');
         if (button) {
-            button.textContent = connecting ? 'Connecting Tools…' : savedPayrollCredential() ? 'Load Payroll' : 'Connect Tools';
-            button.disabled = connecting;
+            button.textContent = connecting ? 'Connecting Tools…' : importPending ? 'Loading payroll…' : savedPayrollCredential() ? 'Load Payroll' : 'Connect Tools';
+            button.disabled = connecting || importPending;
         }
     }
 
@@ -508,7 +508,7 @@
     }
 
     function openPayroll() {
-        if (connecting) return;
+        if (connecting || importPending) return;
         if (!savedPayrollCredential()) { void connectTools(); return; }
         showDateSelector(loadPayroll);
     }
@@ -523,6 +523,7 @@
         }
 
         importPending = true;
+        refreshPayrollButton();
         try {
             const credential = savedPayrollCredential();
             if (!credential) { await connectTools(); return; }
@@ -531,8 +532,10 @@
                 throw new PayrollImportError('The Patriot company changed. Nothing was filled; select the payroll again.');
             }
             GM_setValue(PAYROLL_AUTH_STORAGE_KEY, credential);
-            const result = fillPayrolls(payroll);
-            let text = 'Loaded successfully.\n\n';
+            const result = await fillPayrolls(payroll);
+            const needsReview = result.missedEmployees.length || result.missedRoles.length || result.ambiguousEmployees.length;
+            let text = needsReview ? 'Import completed with items to review.\n\n' : 'Loaded successfully.\n\n';
+            text += `Employees scanned: ${result.scannedEmployees}\n`;
             text += `Matched employees: ${result.matchedEmployees}\n`;
             if (result.missedEmployees.length) {
                 text += '\nEmployees not found:\n' + result.missedEmployees.join(', ') + '\n';
@@ -540,65 +543,173 @@
             if (result.missedRoles.length) {
                 text += '\nRoles not found:\n' + result.missedRoles.join(', ') + '\n';
             }
-            showModal({title: 'Finished', text});
+            if (result.ambiguousEmployees.length) {
+                text += '\nMultiple name matches (not filled):\n' + result.ambiguousEmployees.join(', ') + '\n';
+            }
+            showModal({title: needsReview ? 'Review needed' : 'Finished', text, isError: Boolean(needsReview)});
         } catch (error) {
             // Never display raw transport errors: extensions can include request headers.
             showModal({title: 'Error', text: error instanceof PayrollImportError ? error.message : 'Payroll import failed. Please try again.', isError: true});
         } finally {
             importPending = false;
+            refreshPayrollButton();
         }
     }
 
 
-    function fillPayrolls(payroll) {
-        const patriotEmployees = document.querySelectorAll('tr.employee-row');
-        const patriotIdMap = {};
-        patriotEmployees.forEach((row) => {
-            const nameCell = row.querySelector('td.employee-name-column');
-            if (nameCell && nameCell.hasAttribute('data-column')) {
-                const strong = nameCell.querySelector('strong, a[data-employee-name]');
-                const nameStr = (strong?.textContent || '').trim();
-                if (nameStr) {
-                    const eid = row.getAttribute('data-employee-id');
-                    patriotIdMap[nameStr] = eid;
-                }
-            }
+    // --- Virtualized payroll grid ---
+    const gridDelay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    function mountedEmployees() {
+        const employees = new Map();
+        document.querySelectorAll('tr.employee-row').forEach((row) => {
+            const id = row.getAttribute('data-employee-id');
+            const name = row.querySelector('td.employee-name-column strong, td.employee-name-column a[data-employee-name]')?.textContent.trim();
+            if (id && name) employees.set(id, name);
         });
+        return employees;
+    }
 
+    function expectedEmployeeCount() {
+        const counts = Array.from(document.querySelectorAll('#entry-grid-jumps .mk5-jump-count'));
+        if (!counts.length) return null; // Legacy, non-virtualized layout.
+        const values = counts.map((el) => Number(el.textContent.trim()));
+        return values.every((n) => Number.isInteger(n) && n >= 0) ? values.reduce((a, b) => a + b, 0) : null;
+    }
 
-        let missedEmployees = [];
-        let missedRoles = [];
-        let matchedEmployees = 0;
+    function payrollGridSignature() {
+        // Include row structure as well as names: multi-rate rows hydrate together.
+        return Array.from(document.querySelectorAll('tr.employee-row')).map((row) =>
+            `${row.getAttribute('data-employee-id')}:${row.getAttribute('data-pay-rate')}:${row.querySelectorAll('input').length}`
+        ).join('|');
+    }
 
-        payroll.forEach((shakingEmployee) => {
-            const nameSet =
-                shakingEmployee.employee?.name_set ||
-                shakingEmployee.name.trim().split(/\s+/);
+    async function settlePayrollGrid(assertContext) {
+        let previous = '', stable = 0;
+        // Allow Patriot's scroll handler and asynchronous row mounting to finish.
+        for (let attempt = 0; attempt < 40; attempt++) {
+            await gridDelay(50);
+            assertContext();
+            const signature = payrollGridSignature();
+            stable = signature === previous ? stable + 1 : 0;
+            previous = signature;
+            if (stable >= 3) return;
+        }
+        throw new PayrollImportError('The employee list is still changing. Please wait and try again.');
+    }
 
-            let employeeMatched = false;
+    async function visitPayrollGrid(viewport, visit, assertContext) {
+        if (!viewport) { assertContext(); visit(mountedEmployees()); return; }
+        if (viewport.clientHeight <= 0) throw new PayrollImportError('The employee list is hidden. Open the payroll grid and try again.');
+        viewport.scrollTo({top: 0, behavior: 'instant'});
+        // Also notify when already at zero, including immediately after a refresh.
+        viewport.dispatchEvent(new Event('scroll'));
+        for (let step = 0; step < 500; step++) {
+            await settlePayrollGrid(assertContext);
+            visit(mountedEmployees());
+            const bottom = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+            if (viewport.scrollTop >= bottom - 1) return;
+            // Overlap windows so tall/multi-rate employee groups cannot be skipped.
+            const next = Math.min(bottom, viewport.scrollTop + Math.max(1, Math.floor(viewport.clientHeight / 2)));
+            viewport.scrollTo({top: next, behavior: 'instant'});
+        }
+        throw new PayrollImportError('Unable to finish scrolling the employee list. Please try again.');
+    }
 
-            Object.keys(patriotIdMap).forEach((name) => {
-                const matched = nameSet.every((piece) =>
-                    name.toLowerCase().includes(piece.toLowerCase())
+    async function fillPayrolls(payroll) {
+        const company = currentPatriotId();
+        let period, periodText, viewport, gridReady = false;
+        const assertContext = () => {
+            if (!isPatriotPayrollPage() || currentPatriotId() !== company ||
+                (gridReady && (document.querySelector('#appContainer') !== period || period?.textContent !== periodText)) ||
+                (viewport && document.querySelector('#entry-grid-viewport') !== viewport)) {
+                throw new PayrollImportError('The payroll page changed. Import stopped; review the entries before retrying.');
+            }
+        };
+        // The userscript button can appear before Patriot has rendered its grid.
+        let ready = false;
+        for (let attempt = 0; attempt < 120; attempt++) {
+            assertContext();
+            if (mountedEmployees().size || expectedEmployeeCount() === 0) { ready = true; break; }
+            await gridDelay(100);
+        }
+        if (!ready) throw new PayrollImportError('The employee list did not load. Please wait and try again.');
+        period = document.querySelector('#appContainer');
+        periodText = period?.textContent;
+        viewport = document.querySelector('#entry-grid-viewport');
+        gridReady = true;
+        const originalPosition = {top: viewport?.scrollTop, left: viewport?.scrollLeft, x: window.scrollX, y: window.scrollY};
+        const updateProgress = (text) => {
+            const button = document.querySelector('.sclp-fab');
+            if (button) button.textContent = text;
+        };
+        try {
+            // Patriot also uses the viewport's screen position to window its rows.
+            viewport?.scrollIntoView({block: 'start', behavior: 'instant'});
+            const roster = new Map();
+            const expected = expectedEmployeeCount();
+            for (let pass = 0; pass < 2; pass++) {
+                await visitPayrollGrid(viewport, (employees) => {
+                    employees.forEach((name, id) => roster.set(id, name));
+                    updateProgress(`Scanning employees… ${roster.size}${expected === null ? '' : `/${expected}`}`);
+                }, assertContext);
+                if (expected === null || roster.size === expected) break;
+            }
+            if (expected !== null && roster.size !== expected) {
+                throw new PayrollImportError(`Only ${roster.size} of ${expected} employees loaded. Nothing was filled. Please try again.`);
+            }
+
+            const missedEmployees = [], missedRoles = [], ambiguousEmployees = [];
+            const matches = new Map(), conflicts = new Set();
+            payroll.forEach((employee) => {
+                const pieces = employee.employee?.name_set || employee.name.trim().split(/\s+/);
+                const name = pieces.join(' ');
+                const candidates = Array.from(roster).filter(([, displayName]) =>
+                    pieces.every((piece) => displayName.toLowerCase().includes(piece.toLowerCase()))
                 );
-                if (matched) {
-                    employeeMatched = true;
-                    matchedEmployees++;
-                    fillPayroll(shakingEmployee, patriotIdMap[name], nameSet.join(' '), missedRoles);
+                if (!candidates.length) { missedEmployees.push(name); return; }
+                if (candidates.length !== 1) { ambiguousEmployees.push(name); return; }
+                const id = candidates[0][0];
+                if (matches.has(id)) {
+                    conflicts.add(id);
+                    ambiguousEmployees.push(matches.get(id).name, name);
+                } else {
+                    matches.set(id, {employee, name});
                 }
             });
+            conflicts.forEach((id) => matches.delete(id));
 
-            if (!employeeMatched) {
-                missedEmployees.push(nameSet.join(' '));
+            const filled = new Set();
+            // Rescan live rows: references collected above may now be detached.
+            if (matches.size) {
+                await visitPayrollGrid(viewport, (employees) => {
+                    employees.forEach((displayName, id) => {
+                        if (!matches.has(id) || filled.has(id)) return;
+                        assertContext();
+                        if (roster.get(id) !== displayName) throw new PayrollImportError('The employee list changed. Import stopped; review the entries before retrying.');
+                        const {employee, name} = matches.get(id);
+                        fillPayroll(employee, id, name, missedRoles);
+                        filled.add(id);
+                    });
+                    updateProgress(`Filling employees… ${filled.size}/${matches.size}`);
+                }, assertContext);
             }
-        });
-
-        // 去重一下
-        missedEmployees = Array.from(new Set(missedEmployees));
-        missedRoles = Array.from(new Set(missedRoles));
-
-
-        return {matchedEmployees, missedEmployees, missedRoles};
+            matches.forEach(({name}, id) => {
+                if (!filled.has(id)) missedEmployees.push(`${name} (row did not load)`);
+            });
+            return {
+                scannedEmployees: roster.size,
+                matchedEmployees: filled.size,
+                missedEmployees: Array.from(new Set(missedEmployees)),
+                missedRoles: Array.from(new Set(missedRoles)),
+                ambiguousEmployees: Array.from(new Set(ambiguousEmployees)),
+            };
+        } finally {
+            if (viewport?.isConnected) {
+                viewport.scrollTo({top: originalPosition.top, left: originalPosition.left, behavior: 'instant'});
+            }
+            window.scrollTo({left: originalPosition.x, top: originalPosition.y, behavior: 'instant'});
+        }
     }
 
 // ---- money 输入框定位：Patriot 改 placeholder 时更抗揍 ----
